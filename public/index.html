@@ -26,11 +26,33 @@
       <div class="brand"><span class="mark-sm">▚</span> Vault</div>
       <div class="crumbs" id="crumbs"></div>
       <div class="spacer"></div>
+      <div class="storage" id="storage" title="Storage used across your vault">
+        <div class="storage-bar"><i id="storage-fill"></i></div>
+        <span class="storage-text" id="storage-text">—</span>
+      </div>
       <div class="user" id="user"></div>
       <button id="signout" class="btn-ghost">Sign out</button>
     </header>
 
     <main class="stage" id="stage">
+      <!-- Search + sort row -->
+      <div class="filters">
+        <div class="search-wrap">
+          <span class="search-ic">⌕</span>
+          <input id="search" class="search" type="text" placeholder="Search this folder…" />
+          <button id="search-clear" class="search-clear hidden" aria-label="Clear search">✕</button>
+        </div>
+        <select id="sort" class="sort" title="Sort by">
+          <option value="type-name">Type, then name</option>
+          <option value="name">Name (A–Z)</option>
+          <option value="name-desc">Name (Z–A)</option>
+          <option value="date-desc">Newest first</option>
+          <option value="date">Oldest first</option>
+          <option value="size-desc">Largest first</option>
+          <option value="size">Smallest first</option>
+        </select>
+      </div>
+
       <div class="toolbar">
         <div class="view-toggle" id="view-toggle">
           <button data-view="grid" class="vt-btn active" title="Grid view" aria-label="Grid view">▦</button>
@@ -53,6 +75,7 @@
         </label>
         <span id="bulk-count" class="bulk-count">0 selected</span>
         <div class="spacer"></div>
+        <button id="bulk-move" class="btn-ghost" disabled>Move selected</button>
         <button id="bulk-delete" class="btn-danger" disabled>Delete selected</button>
         <button id="select-cancel" class="btn-ghost">Cancel</button>
       </div>
@@ -89,6 +112,22 @@
         <div class="spacer"></div>
         <button id="note-copy" class="btn-ghost">Copy all</button>
         <button id="note-save" class="btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Move-to modal -->
+  <div id="move-modal" class="note-modal hidden">
+    <div class="note-card move-card">
+      <div class="note-head">
+        <span class="move-title" id="move-title">Move to…</span>
+        <button id="move-close" class="note-x" aria-label="Close">✕</button>
+      </div>
+      <div id="move-list" class="move-list"></div>
+      <div class="note-foot">
+        <span id="move-status" class="note-status"></span>
+        <div class="spacer"></div>
+        <button id="move-cancel" class="btn-ghost">Cancel</button>
       </div>
     </div>
   </div>

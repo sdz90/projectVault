@@ -30,6 +30,7 @@ onAuthStateChanged(auth, (u) => {
     $("login").classList.add("hidden");
     $("app").classList.remove("hidden");
     $("user").textContent = u.email;
+    initPrefsUI();
     openFolder("root", "Vault", true);
   } else {
     if (u) { signOut(auth); alert("This vault is private."); }
@@ -45,6 +46,9 @@ function openFolder(id, name, reset) {
   if (reset) path = [{ id: "root", name: "Vault" }];
   else if (!path.find((p) => p.id === id)) path.push({ id, name });
   else path = path.slice(0, path.findIndex((p) => p.id === id) + 1);
+  // Reset search when changing folders.
+  searchTerm = "";
+  if ($("search")) { $("search").value = ""; $("search-clear").classList.add("hidden"); }
   renderCrumbs();
   watchItems();
 }
@@ -77,15 +81,51 @@ function watchItems() {
     orderBy("name")
   );
   unsub = onSnapshot(q, (snap) => {
-    const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    renderGrid(items);
+    rawItems = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    applyView();
   });
 }
 
-let currentItems = [];
-let viewMode = "grid";
+let rawItems = [];        // everything in the current folder, unfiltered
+let currentItems = [];    // what's actually shown (after search + sort)
+let viewMode = loadPref("viewMode", "grid");
+let sortMode = loadPref("sortMode", "type-name");
+let searchTerm = "";
 let selectMode = false;
 let selected = new Set();
+
+// Filter by search term, then sort, then render.
+function applyView() {
+  let items = rawItems;
+  if (searchTerm) {
+    const t = searchTerm.toLowerCase();
+    items = items.filter((it) => it.name.toLowerCase().includes(t));
+  }
+  items = sortItems(items, sortMode);
+  renderGrid(items);
+  updateStorage();
+}
+
+function sortItems(items, mode) {
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  const ts = (x) => (x.createdAt && typeof x.createdAt.toMillis === "function" ? x.createdAt.toMillis() : 0);
+  const arr = [...items];
+  switch (mode) {
+    case "name": arr.sort(byName); break;
+    case "name-desc": arr.sort((a, b) => byName(b, a)); break;
+    case "date": arr.sort((a, b) => ts(a) - ts(b)); break;
+    case "date-desc": arr.sort((a, b) => ts(b) - ts(a)); break;
+    case "size": arr.sort((a, b) => (a.bytes || 0) - (b.bytes || 0)); break;
+    case "size-desc": arr.sort((a, b) => (b.bytes || 0) - (a.bytes || 0)); break;
+    case "type-name":
+    default: {
+      // Folders, then notes, then files — each group alphabetical.
+      const rank = (x) => (x.type === "folder" ? 0 : x.type === "note" ? 1 : 2);
+      arr.sort((a, b) => rank(a) - rank(b) || byName(a, b));
+    }
+  }
+  return arr;
+}
 
 function renderGrid(items) {
   currentItems = items;
@@ -93,6 +133,17 @@ function renderGrid(items) {
   grid.innerHTML = "";
   grid.className = "grid" + (viewMode === "list" ? " list" : "") + (selectMode ? " selecting" : "");
   $("empty").classList.toggle("hidden", items.length > 0);
+  if (!items.length) {
+    const t = $("empty").querySelector(".empty-title");
+    const s = $("empty").querySelector(".empty-sub");
+    if (searchTerm) {
+      t.textContent = "No matches";
+      s.textContent = `Nothing here matches “${searchTerm}”.`;
+    } else {
+      t.textContent = "Nothing here yet";
+      s.textContent = "Drag files in, or use Upload files above.";
+    }
+  }
 
   // Remove any previous list header, then add one if in list view.
   document.getElementById("list-head")?.remove();
@@ -192,7 +243,7 @@ function renderGrid(items) {
         share.innerHTML = "🔗";
         share.onclick = async (e) => {
           e.stopPropagation();
-          try { await navigator.clipboard.writeText(it.url); } catch { fallbackCopy(it.url); }
+          try { await navigator.clipboard.writeText(downloadUrl(it)); } catch { fallbackCopy(downloadUrl(it)); }
           share.innerHTML = "✓"; share.title = "Link copied";
           setTimeout(() => { share.innerHTML = "🔗"; share.title = "Copy share link"; }, 1200);
         };
@@ -220,14 +271,82 @@ function col(cls, text) {
   return d;
 }
 
+/* ---------------- Preferences (persisted) ---------------- */
+function loadPref(key, fallback) {
+  try { return localStorage.getItem("vault:" + key) || fallback; }
+  catch { return fallback; }
+}
+function savePref(key, val) {
+  try { localStorage.setItem("vault:" + key, val); } catch {}
+}
+// Reflect saved prefs in the controls (called once after login).
+function initPrefsUI() {
+  document.querySelectorAll(".vt-btn").forEach((x) =>
+    x.classList.toggle("active", x.dataset.view === viewMode));
+  $("sort").value = sortMode;
+}
+
+/* ---------------- Storage usage ---------------- */
+// Cloudinary free tier ≈ 25 GB storage. Adjust if your plan differs.
+const STORAGE_QUOTA_BYTES = 25 * 1024 * 1024 * 1024;
+let storageTimer = null;
+
+// Debounced: sum bytes across ALL the user's files (not just this folder).
+function updateStorage() {
+  clearTimeout(storageTimer);
+  storageTimer = setTimeout(recomputeStorage, 400);
+}
+
+async function recomputeStorage() {
+  try {
+    const snap = await getDocs(query(
+      collection(db, "items"),
+      where("owner", "==", user.uid),
+      where("type", "==", "file")
+    ));
+    let total = 0;
+    snap.forEach((d) => { total += d.data().bytes || 0; });
+    const pct = Math.min(100, (total / STORAGE_QUOTA_BYTES) * 100);
+    $("storage-fill").style.width = pct.toFixed(1) + "%";
+    $("storage-fill").classList.toggle("high", pct > 85);
+    $("storage-text").textContent = `${fmtSize(total)} used`;
+    $("storage").title = `${fmtSize(total)} of ${fmtSize(STORAGE_QUOTA_BYTES)} used (${pct.toFixed(1)}%)`;
+  } catch (e) {
+    console.error("storage calc failed", e);
+  }
+}
+
 /* ---------------- View toggle ---------------- */
 $("view-toggle").addEventListener("click", (e) => {
   const b = e.target.closest(".vt-btn");
   if (!b) return;
   viewMode = b.dataset.view;
+  savePref("viewMode", viewMode);
   document.querySelectorAll(".vt-btn").forEach((x) =>
     x.classList.toggle("active", x === b));
   renderGrid(currentItems);
+});
+
+/* ---------------- Search ---------------- */
+let searchTimer = null;
+$("search").addEventListener("input", (e) => {
+  const v = e.target.value;
+  $("search-clear").classList.toggle("hidden", !v);
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { searchTerm = v.trim(); applyView(); }, 120);
+});
+$("search-clear").onclick = () => {
+  $("search").value = ""; searchTerm = "";
+  $("search-clear").classList.add("hidden");
+  applyView();
+  $("search").focus();
+};
+
+/* ---------------- Sort ---------------- */
+$("sort").addEventListener("change", (e) => {
+  sortMode = e.target.value;
+  savePref("sortMode", sortMode);
+  applyView();
 });
 
 /* ---------------- Selection / bulk delete ---------------- */
@@ -248,6 +367,7 @@ function updateBulkBar() {
   const n = selected.size;
   $("bulk-count").textContent = `${n} selected`;
   $("bulk-delete").disabled = n === 0;
+  $("bulk-move").disabled = n === 0;
   // Keep "select all" checkbox in sync.
   $("select-all").checked = n > 0 && n === currentItems.length;
 }
@@ -285,6 +405,97 @@ $("bulk-delete").onclick = async () => {
   setSelectMode(false);
 };
 
+$("bulk-move").onclick = () => {
+  const items = currentItems.filter((it) => selected.has(it.id));
+  if (items.length) openMove(items);
+};
+
+/* ---------------- Move to folder ---------------- */
+let movingItems = [];
+
+async function openMove(items) {
+  movingItems = items;
+  $("move-title").textContent =
+    items.length === 1 ? `Move “${items[0].name}” to…` : `Move ${items.length} items to…`;
+  $("move-status").textContent = "Loading folders…";
+  $("move-list").innerHTML = "";
+  $("move-modal").classList.remove("hidden");
+
+  // Fetch all of the user's folders to build a destination tree.
+  const snap = await getDocs(query(
+    collection(db, "items"),
+    where("owner", "==", user.uid),
+    where("type", "==", "folder")
+  ));
+  const folders = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  // Folders being moved (and their descendants) are invalid destinations.
+  const movingFolderIds = new Set(items.filter((i) => i.type === "folder").map((i) => i.id));
+  const blocked = new Set(movingFolderIds);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const f of folders) {
+      if (!blocked.has(f.id) && blocked.has(f.parent)) { blocked.add(f.id); grew = true; }
+    }
+  }
+
+  // Build tree (parent -> children), rooted at "root".
+  const byParent = {};
+  folders.forEach((f) => { (byParent[f.parent] ||= []).push(f); });
+  Object.values(byParent).forEach((arr) =>
+    arr.sort((a, b) => a.name.localeCompare(b.name)));
+
+  const list = $("move-list");
+  list.innerHTML = "";
+  // Root option.
+  list.appendChild(moveRow("root", "Vault (home)", 0, false));
+  (function walk(parentId, depth) {
+    for (const f of (byParent[parentId] || [])) {
+      list.appendChild(moveRow(f.id, f.name, depth, blocked.has(f.id)));
+      walk(f.id, depth + 1);
+    }
+  })("root", 1);
+
+  $("move-status").textContent = "";
+}
+
+function moveRow(destId, label, depth, disabled) {
+  const b = document.createElement("button");
+  b.className = "move-row" + (disabled ? " disabled" : "");
+  b.style.paddingLeft = 14 + depth * 18 + "px";
+  b.innerHTML = `<span class="move-ic">${destId === "root" ? "⌂" : "▤"}</span>${esc(label)}`;
+  // Disable dropping into the same folder everything already sits in.
+  const allSameParent = movingItems.every((i) => i.parent === destId);
+  if (disabled || allSameParent) {
+    b.classList.add("disabled");
+    b.disabled = true;
+    if (allSameParent && !disabled) b.title = "Already here";
+  } else {
+    b.onclick = () => doMove(destId, label);
+  }
+  return b;
+}
+
+async function doMove(destId, label) {
+  $("move-status").textContent = "Moving…";
+  const { updateDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+  try {
+    for (const it of movingItems) {
+      await updateDoc(doc(db, "items", it.id), { parent: destId });
+    }
+    $("move-modal").classList.add("hidden");
+    if (selectMode) setSelectMode(false);
+  } catch (e) {
+    console.error(e);
+    $("move-status").textContent = "Move failed — try again.";
+  }
+}
+
+$("move-close").onclick = () => $("move-modal").classList.add("hidden");
+$("move-cancel").onclick = () => $("move-modal").classList.add("hidden");
+$("move-modal").onclick = (e) => { if (e.target.id === "move-modal") $("move-modal").classList.add("hidden"); };
+
 
 /* ---------------- Item menu ---------------- */
 function toggleMenu(parent, it) {
@@ -294,8 +505,8 @@ function toggleMenu(parent, it) {
   if (it.type === "file") {
     const download = btn("Download", () => downloadFile(it));
     const copy = btn("Copy share link", async () => {
-      try { await navigator.clipboard.writeText(it.url); }
-      catch { fallbackCopy(it.url); }
+      try { await navigator.clipboard.writeText(downloadUrl(it)); }
+      catch { fallbackCopy(downloadUrl(it)); }
       copy.textContent = "Link copied ✓";
       setTimeout(() => (copy.textContent = "Copy share link"), 1400);
     });
@@ -313,9 +524,10 @@ function toggleMenu(parent, it) {
     m.append(openEdit, copyText);
   }
   const ren = btn("Rename", () => rename(it));
+  const move = btn("Move to…", () => openMove([it]));
   const del = btn("Delete", () => remove(it));
   del.className = "danger";
-  m.append(ren, del);
+  m.append(ren, move, del);
   parent.appendChild(m);
   setTimeout(() => document.addEventListener("click", () => m.remove(), { once: true }), 0);
 }
@@ -467,6 +679,40 @@ const dz = $("dropzone");
 dz.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
 $("file-input").onchange = (e) => { handleFiles(e.target.files); e.target.value = ""; };
 
+// Paste-to-upload: paste an image (e.g. a screenshot) straight into the folder.
+document.addEventListener("paste", (e) => {
+  // Ignore pastes while typing in an input / textarea / the note editor.
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA") return;
+  if (!user || $("app").classList.contains("hidden")) return;
+
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  const files = [];
+  for (const it of items) {
+    if (it.kind === "file") {
+      const f = it.getAsFile();
+      if (f) {
+        // Clipboard images often come as a blob with no name — give it one.
+        if (!f.name || f.name === "image.png") {
+          const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
+          const stamped = new File([f], `pasted_${nowStamp()}.${ext}`, { type: f.type });
+          files.push(stamped);
+        } else {
+          files.push(f);
+        }
+      }
+    }
+  }
+  if (files.length) { e.preventDefault(); files.forEach(uploadOne); }
+});
+
+function nowStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
 function handleFiles(files) {
   [...files].forEach(uploadOne);
 }
@@ -489,6 +735,8 @@ async function uploadOne(file) {
     form.append("timestamp", sig.timestamp);
     form.append("signature", sig.signature);
     form.append("folder", sig.folder);
+    form.append("use_filename", sig.useFilename);
+    form.append("unique_filename", sig.uniqueFilename);
 
     const res = await xhrUpload(
       `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`,

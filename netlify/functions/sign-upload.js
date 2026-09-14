@@ -33,8 +33,15 @@ exports.handler = async (event) => {
   const folder = (body.folder || "vault").replace(/[^a-zA-Z0-9/_-]/g, "");
   const timestamp = Math.round(Date.now() / 1000);
 
+  // use_filename: base the stored name on the original filename (readable URLs).
+  // unique_filename: still append random chars so names don't collide.
+  const useFilename = "true";
+  const uniqueFilename = "true";
+
   // Params to sign must be sorted alphabetically.
-  const toSign = `folder=${folder}&timestamp=${timestamp}`;
+  const toSign =
+    `folder=${folder}&timestamp=${timestamp}` +
+    `&unique_filename=${uniqueFilename}&use_filename=${useFilename}`;
   const signature = crypto
     .createHash("sha1")
     .update(toSign + CLOUDINARY_API_SECRET)
@@ -44,6 +51,8 @@ exports.handler = async (event) => {
     signature,
     timestamp,
     folder,
+    useFilename,
+    uniqueFilename,
     apiKey: CLOUDINARY_API_KEY,
   });
 };
