@@ -84,12 +84,14 @@ function watchItems() {
 
 let currentItems = [];
 let viewMode = "grid";
+let selectMode = false;
+let selected = new Set();
 
 function renderGrid(items) {
   currentItems = items;
   const grid = $("grid");
   grid.innerHTML = "";
-  grid.className = "grid" + (viewMode === "list" ? " list" : "");
+  grid.className = "grid" + (viewMode === "list" ? " list" : "") + (selectMode ? " selecting" : "");
   $("empty").classList.toggle("hidden", items.length > 0);
 
   // Remove any previous list header, then add one if in list view.
@@ -111,7 +113,23 @@ function renderGrid(items) {
     const el = document.createElement("div");
     el.className = "item" +
       (it.type === "folder" ? " folder" : "") +
-      (it.type === "note" ? " note-item" : "");
+      (it.type === "note" ? " note-item" : "") +
+      (selected.has(it.id) ? " selected" : "");
+
+    // Selection checkbox (visible only in select mode).
+    if (selectMode) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "sel-box";
+      cb.checked = selected.has(it.id);
+      cb.onclick = (e) => {
+        e.stopPropagation();
+        if (cb.checked) selected.add(it.id); else selected.delete(it.id);
+        el.classList.toggle("selected", cb.checked);
+        updateBulkBar();
+      };
+      el.appendChild(cb);
+    }
 
     const thumb = document.createElement("div");
     thumb.className = "thumb";
@@ -169,12 +187,22 @@ function renderGrid(items) {
         dl.innerHTML = "↓";
         dl.onclick = (e) => { e.stopPropagation(); downloadFile(it); };
 
+        const share = document.createElement("button");
+        share.className = "ha-btn"; share.title = "Copy share link"; share.setAttribute("aria-label", "Copy share link");
+        share.innerHTML = "🔗";
+        share.onclick = async (e) => {
+          e.stopPropagation();
+          try { await navigator.clipboard.writeText(it.url); } catch { fallbackCopy(it.url); }
+          share.innerHTML = "✓"; share.title = "Link copied";
+          setTimeout(() => { share.innerHTML = "🔗"; share.title = "Copy share link"; }, 1200);
+        };
+
         const del = document.createElement("button");
         del.className = "ha-btn ha-danger"; del.title = "Delete"; del.setAttribute("aria-label", "Delete");
         del.innerHTML = "🗑";
         del.onclick = (e) => { e.stopPropagation(); remove(it); };
 
-        actions.append(dl, del);
+        actions.append(dl, share, del);
         thumb.appendChild(actions);
       }
 
@@ -202,6 +230,62 @@ $("view-toggle").addEventListener("click", (e) => {
   renderGrid(currentItems);
 });
 
+/* ---------------- Selection / bulk delete ---------------- */
+$("select-toggle").onclick = () => setSelectMode(true);
+$("select-cancel").onclick = () => setSelectMode(false);
+
+function setSelectMode(on) {
+  selectMode = on;
+  selected.clear();
+  $("bulk-bar").classList.toggle("hidden", !on);
+  $("select-toggle").classList.toggle("hidden", on);
+  $("select-all").checked = false;
+  updateBulkBar();
+  renderGrid(currentItems);
+}
+
+function updateBulkBar() {
+  const n = selected.size;
+  $("bulk-count").textContent = `${n} selected`;
+  $("bulk-delete").disabled = n === 0;
+  // Keep "select all" checkbox in sync.
+  $("select-all").checked = n > 0 && n === currentItems.length;
+}
+
+$("select-all").onclick = (e) => {
+  if (e.target.checked) currentItems.forEach((it) => selected.add(it.id));
+  else selected.clear();
+  updateBulkBar();
+  renderGrid(currentItems);
+};
+
+$("bulk-delete").onclick = async () => {
+  const ids = [...selected];
+  if (!ids.length) return;
+  const items = currentItems.filter((it) => selected.has(it.id));
+  const hasFolder = items.some((it) => it.type === "folder");
+  const msg = `Delete ${ids.length} item${ids.length > 1 ? "s" : ""}?` +
+    (hasFolder ? " Folders will be deleted with everything inside them." : "");
+  if (!confirm(msg)) return;
+
+  const btn = $("bulk-delete");
+  btn.disabled = true;
+  btn.textContent = "Deleting…";
+  // Delete sequentially so Cloudinary cleanup runs for each file.
+  for (const it of items) {
+    try {
+      if (it.type === "folder") await deleteTree(it.id);
+      else if (it.type === "file") await destroyInCloudinary(it);
+      await deleteDoc(doc(db, "items", it.id));
+    } catch (err) {
+      console.error("Failed to delete", it.name, err);
+    }
+  }
+  btn.textContent = "Delete selected";
+  setSelectMode(false);
+};
+
+
 /* ---------------- Item menu ---------------- */
 function toggleMenu(parent, it) {
   document.querySelectorAll(".menu").forEach((m) => m.remove());
@@ -209,10 +293,11 @@ function toggleMenu(parent, it) {
   m.className = "menu";
   if (it.type === "file") {
     const download = btn("Download", () => downloadFile(it));
-    const copy = btn("Copy share link", () => {
-      navigator.clipboard.writeText(it.url);
-      copy.textContent = "Copied ✓";
-      setTimeout(() => (copy.textContent = "Copy share link"), 1200);
+    const copy = btn("Copy share link", async () => {
+      try { await navigator.clipboard.writeText(it.url); }
+      catch { fallbackCopy(it.url); }
+      copy.textContent = "Link copied ✓";
+      setTimeout(() => (copy.textContent = "Copy share link"), 1400);
     });
     const open = btn("Open in new tab", () => window.open(it.url, "_blank"));
     m.append(download, copy, open);
@@ -239,6 +324,15 @@ function btn(label, fn) {
   b.textContent = label;
   b.onclick = (e) => { e.stopPropagation(); fn(); };
   return b;
+}
+
+// Clipboard fallback for insecure contexts / older browsers.
+function fallbackCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); } catch {}
+  ta.remove();
 }
 
 /* ---------------- CRUD ---------------- */

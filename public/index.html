@@ -37,12 +37,24 @@
           <button data-view="list" class="vt-btn" title="List view" aria-label="List view">☰</button>
         </div>
         <div class="spacer"></div>
+        <button id="select-toggle" class="btn-ghost">Select</button>
         <button id="new-note" class="btn-ghost">New note</button>
         <button id="new-folder" class="btn-ghost">New folder</button>
         <label class="btn-primary upload-label">
           Upload files
           <input type="file" id="file-input" multiple hidden />
         </label>
+      </div>
+
+      <!-- Bulk action bar (shown in select mode) -->
+      <div id="bulk-bar" class="bulk-bar hidden">
+        <label class="bulk-check">
+          <input type="checkbox" id="select-all" /> Select all
+        </label>
+        <span id="bulk-count" class="bulk-count">0 selected</span>
+        <div class="spacer"></div>
+        <button id="bulk-delete" class="btn-danger" disabled>Delete selected</button>
+        <button id="select-cancel" class="btn-ghost">Cancel</button>
       </div>
 
       <div id="dropzone" class="dropzone">
