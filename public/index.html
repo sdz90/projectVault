@@ -32,6 +32,12 @@
 
     <main class="stage" id="stage">
       <div class="toolbar">
+        <div class="view-toggle" id="view-toggle">
+          <button data-view="grid" class="vt-btn active" title="Grid view" aria-label="Grid view">▦</button>
+          <button data-view="list" class="vt-btn" title="List view" aria-label="List view">☰</button>
+        </div>
+        <div class="spacer"></div>
+        <button id="new-note" class="btn-ghost">New note</button>
         <button id="new-folder" class="btn-ghost">New folder</button>
         <label class="btn-primary upload-label">
           Upload files
@@ -56,6 +62,23 @@
   <div id="preview" class="preview hidden">
     <button class="preview-close" id="preview-close">✕</button>
     <div class="preview-body" id="preview-body"></div>
+  </div>
+
+  <!-- Note editor modal -->
+  <div id="note-modal" class="note-modal hidden">
+    <div class="note-card">
+      <div class="note-head">
+        <input id="note-title" class="note-title" placeholder="Untitled note" />
+        <button id="note-close" class="note-x" aria-label="Close">✕</button>
+      </div>
+      <textarea id="note-text" class="note-text" placeholder="Paste or type text here…"></textarea>
+      <div class="note-foot">
+        <span id="note-status" class="note-status"></span>
+        <div class="spacer"></div>
+        <button id="note-copy" class="btn-ghost">Copy all</button>
+        <button id="note-save" class="btn-primary">Save</button>
+      </div>
+    </div>
   </div>
 
   <!-- Firebase + app -->

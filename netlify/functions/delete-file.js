@@ -63,11 +63,19 @@ exports.handler = async (event) => {
   );
   const result = await res.json();
 
-  // Cloudinary returns { result: "ok" } on success, "not found" if already gone.
+  // Success: Cloudinary returns { result: "ok" }.
+  // "not found" means it's already gone — also fine for our purposes.
   if (result.result === "ok" || result.result === "not found")
     return json(200, { ok: true, result: result.result });
 
-  return json(502, { error: "Cloudinary: " + (result.result || "unknown") });
+  // On any other outcome, surface Cloudinary's actual error so we can see it.
+  // When a request is rejected (bad signature, etc.) Cloudinary returns
+  // { error: { message: "..." } } with no `result` field.
+  const detail =
+    (result.error && result.error.message) ||
+    result.result ||
+    `HTTP ${res.status}`;
+  return json(502, { error: "Cloudinary: " + detail });
 };
 
 function json(statusCode, obj) {

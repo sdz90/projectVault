@@ -82,20 +82,45 @@ function watchItems() {
   });
 }
 
+let currentItems = [];
+let viewMode = "grid";
+
 function renderGrid(items) {
+  currentItems = items;
   const grid = $("grid");
   grid.innerHTML = "";
+  grid.className = "grid" + (viewMode === "list" ? " list" : "");
   $("empty").classList.toggle("hidden", items.length > 0);
+
+  // Remove any previous list header, then add one if in list view.
+  document.getElementById("list-head")?.remove();
+  if (viewMode === "list" && items.length) {
+    const head = document.createElement("div");
+    head.id = "list-head";
+    head.className = "list-head";
+    head.innerHTML =
+      `<span class="h-name">Name</span>` +
+      `<span class="h-type col-type">Type</span>` +
+      `<span class="h-date col-date">Modified</span>` +
+      `<span class="h-size">Size</span>` +
+      `<span></span>`;
+    grid.before(head);
+  }
 
   for (const it of items) {
     const el = document.createElement("div");
-    el.className = "item" + (it.type === "folder" ? " folder" : "");
+    el.className = "item" +
+      (it.type === "folder" ? " folder" : "") +
+      (it.type === "note" ? " note-item" : "");
 
     const thumb = document.createElement("div");
     thumb.className = "thumb";
     if (it.type === "folder") {
       thumb.innerHTML = `<span class="glyph">▤</span>`;
       thumb.onclick = () => openFolder(it.id, it.name);
+    } else if (it.type === "note") {
+      thumb.innerHTML = `<span class="glyph">✎</span>`;
+      thumb.onclick = () => openNote(it);
     } else if (it.resourceType === "image") {
       thumb.innerHTML = `<img loading="lazy" src="${thumbUrl(it)}" alt="${esc(it.name)}" />`;
       thumb.onclick = () => preview(it);
@@ -107,20 +132,75 @@ function renderGrid(items) {
       thumb.onclick = () => preview(it);
     }
 
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.innerHTML =
-      `<span class="name">${esc(it.name)}</span>` +
-      (it.type === "file" ? `<span class="size">${fmtSize(it.bytes)}</span>` : "");
-
     const kebab = document.createElement("button");
     kebab.className = "kebab"; kebab.textContent = "⋯";
     kebab.onclick = (e) => { e.stopPropagation(); toggleMenu(el, it); };
 
-    el.append(kebab, thumb, meta);
+    if (viewMode === "list") {
+      const rowName = document.createElement("div");
+      rowName.className = "row-name";
+      const nm = document.createElement("span");
+      nm.className = "name"; nm.textContent = it.name;
+      rowName.append(thumb, nm);
+      if (it.type === "folder") rowName.onclick = () => openFolder(it.id, it.name);
+      else if (it.type === "note") rowName.onclick = () => openNote(it);
+
+      el.append(
+        rowName,
+        col("col-type", it.type === "folder" ? "Folder" : (it.type === "note" ? "Note" : typeLabel(it))),
+        col("col-date", fmtDate(it.createdAt)),
+        col("", it.type === "file" ? fmtSize(it.bytes) : "—"),
+        kebab
+      );
+    } else {
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.innerHTML =
+        `<span class="name">${esc(it.name)}</span>` +
+        (it.type === "file" ? `<span class="size">${fmtSize(it.bytes)}</span>` : "");
+
+      // Quick-action overlay on hover (files only, not folders).
+      if (it.type === "file") {
+        const actions = document.createElement("div");
+        actions.className = "hover-actions";
+
+        const dl = document.createElement("button");
+        dl.className = "ha-btn"; dl.title = "Download"; dl.setAttribute("aria-label", "Download");
+        dl.innerHTML = "↓";
+        dl.onclick = (e) => { e.stopPropagation(); downloadFile(it); };
+
+        const del = document.createElement("button");
+        del.className = "ha-btn ha-danger"; del.title = "Delete"; del.setAttribute("aria-label", "Delete");
+        del.innerHTML = "🗑";
+        del.onclick = (e) => { e.stopPropagation(); remove(it); };
+
+        actions.append(dl, del);
+        thumb.appendChild(actions);
+      }
+
+      el.append(kebab, thumb, meta);
+    }
+
     grid.appendChild(el);
   }
 }
+
+function col(cls, text) {
+  const d = document.createElement("div");
+  d.className = "col " + cls;
+  d.textContent = text;
+  return d;
+}
+
+/* ---------------- View toggle ---------------- */
+$("view-toggle").addEventListener("click", (e) => {
+  const b = e.target.closest(".vt-btn");
+  if (!b) return;
+  viewMode = b.dataset.view;
+  document.querySelectorAll(".vt-btn").forEach((x) =>
+    x.classList.toggle("active", x === b));
+  renderGrid(currentItems);
+});
 
 /* ---------------- Item menu ---------------- */
 function toggleMenu(parent, it) {
@@ -128,13 +208,24 @@ function toggleMenu(parent, it) {
   const m = document.createElement("div");
   m.className = "menu";
   if (it.type === "file") {
+    const download = btn("Download", () => downloadFile(it));
     const copy = btn("Copy share link", () => {
       navigator.clipboard.writeText(it.url);
       copy.textContent = "Copied ✓";
       setTimeout(() => (copy.textContent = "Copy share link"), 1200);
     });
     const open = btn("Open in new tab", () => window.open(it.url, "_blank"));
-    m.append(copy, open);
+    m.append(download, copy, open);
+  }
+  if (it.type === "note") {
+    const openEdit = btn("Open / edit", () => openNote(it));
+    const copyText = btn("Copy text", async () => {
+      try { await navigator.clipboard.writeText(it.content || ""); }
+      catch {}
+      copyText.textContent = "Copied ✓";
+      setTimeout(() => (copyText.textContent = "Copy text"), 1200);
+    });
+    m.append(openEdit, copyText);
   }
   const ren = btn("Rename", () => rename(it));
   const del = btn("Delete", () => remove(it));
@@ -159,6 +250,67 @@ $("new-folder").onclick = async () => {
     name: name.trim(), createdAt: serverTimestamp(),
   });
 };
+
+$("new-note").onclick = () => openNote(null);
+
+/* ---------------- Notes ---------------- */
+let editingNoteId = null;
+
+// Open the note editor. Pass an existing note item to edit, or null to create.
+function openNote(it) {
+  editingNoteId = it ? it.id : null;
+  $("note-title").value = it ? it.name : "";
+  $("note-text").value = it ? (it.content || "") : "";
+  $("note-status").textContent = "";
+  $("note-modal").classList.remove("hidden");
+  // Focus the body for a new note, title stays empty; for existing, focus body too.
+  setTimeout(() => $("note-text").focus(), 50);
+}
+
+function closeNote() {
+  $("note-modal").classList.add("hidden");
+  editingNoteId = null;
+}
+
+$("note-close").onclick = closeNote;
+$("note-modal").onclick = (e) => { if (e.target.id === "note-modal") closeNote(); };
+
+$("note-copy").onclick = async () => {
+  const text = $("note-text").value;
+  try {
+    await navigator.clipboard.writeText(text);
+    flashStatus("Copied to clipboard ✓");
+  } catch {
+    // Fallback for older browsers / insecure contexts.
+    $("note-text").select();
+    document.execCommand("copy");
+    flashStatus("Copied ✓");
+  }
+};
+
+$("note-save").onclick = async () => {
+  const name = ($("note-title").value.trim()) || "Untitled note";
+  const content = $("note-text").value;
+  if (editingNoteId) {
+    const { updateDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    await updateDoc(doc(db, "items", editingNoteId), { name, content, updatedAt: serverTimestamp() });
+    flashStatus("Saved ✓");
+  } else {
+    const ref = await addDoc(collection(db, "items"), {
+      owner: user.uid, parent: cwd, type: "note",
+      name, content, createdAt: serverTimestamp(),
+    });
+    editingNoteId = ref.id;   // stay open, now editing the saved note
+    flashStatus("Saved ✓");
+  }
+};
+
+function flashStatus(msg) {
+  const s = $("note-status");
+  s.textContent = msg;
+  setTimeout(() => { if (s.textContent === msg) s.textContent = ""; }, 1800);
+}
+
 
 async function rename(it) {
   const name = prompt("Rename to", it.name);
@@ -300,7 +452,7 @@ function preview(it) {
   if (it.resourceType === "image") body.innerHTML = `<img src="${it.url}" alt="${esc(it.name)}" />`;
   else if (it.resourceType === "video") body.innerHTML = `<video src="${it.url}" controls autoplay></video>`;
   else body.innerHTML = `<div class="file-fallback"><p>${esc(it.name)}</p>
-    <a class="btn-primary" href="${it.url}" target="_blank" rel="noopener">Download</a></div>`;
+    <a class="btn-primary" href="${downloadUrl(it)}">Download</a></div>`;
   $("preview").classList.remove("hidden");
 }
 $("preview-close").onclick = () => $("preview").classList.add("hidden");
@@ -311,11 +463,47 @@ function thumbUrl(it) {
   // On-the-fly Cloudinary thumbnail transform.
   return it.url.replace("/upload/", "/upload/c_fill,w_400,h_300,q_auto,f_auto/");
 }
+
+// Build a URL that forces a download using the original filename.
+// For image/video, Cloudinary's fl_attachment injects the name (extension kept
+// automatically, so we strip it and any dots, which the flag disallows).
+function downloadUrl(it) {
+  if (it.resourceType === "image" || it.resourceType === "video") {
+    const base = it.name.replace(/\.[^.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "_");
+    return it.url.replace("/upload/", `/upload/fl_attachment:${base}/`);
+  }
+  // Raw files (txt/pdf/zip): fl_attachment (no name) still forces download;
+  // the raw public_id already carries the original name + extension.
+  return it.url.replace("/upload/", "/upload/fl_attachment/");
+}
+
+// Trigger a download without navigating away.
+function downloadFile(it) {
+  const a = document.createElement("a");
+  a.href = downloadUrl(it);
+  a.download = it.name;          // hint for same-origin; Cloudinary header wins cross-origin
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 function fmtSize(b) {
   if (!b) return "";
   const u = ["B", "KB", "MB", "GB"];
   let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
   return b.toFixed(b < 10 && i > 0 ? 1 : 0) + " " + u[i];
+}
+// Short human-readable type label for the list view.
+function typeLabel(it) {
+  const ext = (it.name.split(".").pop() || "").toUpperCase();
+  if (ext && ext !== it.name.toUpperCase()) return ext;
+  return it.resourceType ? it.resourceType : "File";
+}
+// Format Firestore timestamp (or fall back gracefully if not yet set).
+function fmtDate(ts) {
+  const d = ts && typeof ts.toDate === "function" ? ts.toDate() : null;
+  if (!d) return "—";
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 function glyphFor(name) {
   const ext = (name.split(".").pop() || "").toLowerCase();
