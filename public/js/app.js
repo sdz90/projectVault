@@ -61,6 +61,16 @@ function renderCrumbs() {
     b.className = "crumb" + (i === path.length - 1 ? " active" : "");
     b.textContent = p.name;
     b.onclick = () => openFolder(p.id, p.name);
+    // Drop target: drag an item onto a breadcrumb to move it there.
+    b.addEventListener("dragover", (e) => {
+      if (draggingId && p.id !== cwd) { e.preventDefault(); b.classList.add("drag-over"); }
+    });
+    b.addEventListener("dragleave", () => b.classList.remove("drag-over"));
+    b.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      b.classList.remove("drag-over");
+      if (draggingId && p.id !== cwd) await moveItemTo(draggingId, p.id);
+    });
     c.appendChild(b);
     if (i < path.length - 1) {
       const s = document.createElement("span");
@@ -93,6 +103,7 @@ let sortMode = loadPref("sortMode", "type-name");
 let searchTerm = "";
 let selectMode = false;
 let selected = new Set();
+let draggingId = null;
 
 // Filter by search term, then sort, then render.
 function applyView() {
@@ -260,8 +271,74 @@ function renderGrid(items) {
       el.append(kebab, thumb, meta);
     }
 
+    // Drag to move (desktop). Any item can be dragged; folders accept drops.
+    if (!selectMode) {
+      el.draggable = true;
+      el.addEventListener("dragstart", (e) => {
+        draggingId = it.id;
+        el.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        try { e.dataTransfer.setData("text/plain", it.id); } catch {}
+      });
+      el.addEventListener("dragend", () => {
+        draggingId = null;
+        el.classList.remove("dragging");
+        document.querySelectorAll(".drag-over").forEach((x) => x.classList.remove("drag-over"));
+      });
+
+      if (it.type === "folder") {
+        el.addEventListener("dragover", (e) => {
+          if (draggingId && draggingId !== it.id) { e.preventDefault(); el.classList.add("drag-over"); }
+        });
+        el.addEventListener("dragleave", () => el.classList.remove("drag-over"));
+        el.addEventListener("drop", async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          el.classList.remove("drag-over");
+          if (draggingId && draggingId !== it.id) await moveItemTo(draggingId, it.id);
+        });
+      }
+    }
+
     grid.appendChild(el);
   }
+}
+
+// Move a single item into a destination folder by id (used by drag-and-drop).
+async function moveItemTo(itemId, destId) {
+  const item = rawItems.find((x) => x.id === itemId);
+  if (!item || item.parent === destId) return;
+  // Prevent dropping a folder into itself or a descendant.
+  if (item.type === "folder") {
+    if (itemId === destId) return;
+    if (await isDescendant(destId, itemId)) {
+      alert("Can't move a folder into itself or one of its subfolders.");
+      return;
+    }
+  }
+  const { updateDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+  await updateDoc(doc(db, "items", itemId), { parent: destId });
+}
+
+// Is candidateId inside the subtree rooted at ancestorId?
+async function isDescendant(candidateId, ancestorId) {
+  const snap = await getDocs(query(
+    collection(db, "items"),
+    where("owner", "==", user.uid)
+  ));
+  const parentOf = {};
+  snap.forEach((d) => {
+    const data = d.data();
+    if (data.type === "folder") parentOf[d.id] = data.parent;
+  });
+  let cur = candidateId;
+  const seen = new Set();
+  while (cur && cur !== "root" && !seen.has(cur)) {
+    if (cur === ancestorId) return true;
+    seen.add(cur);
+    cur = parentOf[cur];
+  }
+  return false;
 }
 
 function col(cls, text) {
@@ -299,13 +376,17 @@ function updateStorage() {
 
 async function recomputeStorage() {
   try {
+    // Query by owner only (single-field, no composite index needed);
+    // filter to files and sum bytes client-side.
     const snap = await getDocs(query(
       collection(db, "items"),
-      where("owner", "==", user.uid),
-      where("type", "==", "file")
+      where("owner", "==", user.uid)
     ));
     let total = 0;
-    snap.forEach((d) => { total += d.data().bytes || 0; });
+    snap.forEach((d) => {
+      const data = d.data();
+      if (data.type === "file") total += data.bytes || 0;
+    });
     const pct = Math.min(100, (total / STORAGE_QUOTA_BYTES) * 100);
     $("storage-fill").style.width = pct.toFixed(1) + "%";
     $("storage-fill").classList.toggle("high", pct > 85);
@@ -313,6 +394,7 @@ async function recomputeStorage() {
     $("storage").title = `${fmtSize(total)} of ${fmtSize(STORAGE_QUOTA_BYTES)} used (${pct.toFixed(1)}%)`;
   } catch (e) {
     console.error("storage calc failed", e);
+    $("storage-text").textContent = "";
   }
 }
 
@@ -421,13 +503,14 @@ async function openMove(items) {
   $("move-list").innerHTML = "";
   $("move-modal").classList.remove("hidden");
 
-  // Fetch all of the user's folders to build a destination tree.
+  // Fetch all of the user's items, keep folders (owner-only query = no index needed).
   const snap = await getDocs(query(
     collection(db, "items"),
-    where("owner", "==", user.uid),
-    where("type", "==", "folder")
+    where("owner", "==", user.uid)
   ));
-  const folders = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const folders = snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((x) => x.type === "folder");
 
   // Folders being moved (and their descendants) are invalid destinations.
   const movingFolderIds = new Set(items.filter((i) => i.type === "folder").map((i) => i.id));
@@ -669,14 +752,21 @@ async function destroyInCloudinary(it) {
 /* ---------------- Upload (drag + picker) ---------------- */
 const dz = $("dropzone");
 ["dragenter", "dragover"].forEach((ev) =>
-  dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("dragging"); }));
+  dz.addEventListener(ev, (e) => {
+    if (draggingId) return;                 // internal move drag, not a file upload
+    e.preventDefault(); dz.classList.add("dragging");
+  }));
 ["dragleave", "drop"].forEach((ev) =>
   dz.addEventListener(ev, (e) => {
+    if (draggingId) return;
     e.preventDefault();
     if (ev === "dragleave" && dz.contains(e.relatedTarget)) return;
     dz.classList.remove("dragging");
   }));
-dz.addEventListener("drop", (e) => handleFiles(e.dataTransfer.files));
+dz.addEventListener("drop", (e) => {
+  if (draggingId) return;                   // handled by folder/crumb drop targets
+  if (e.dataTransfer.files && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+});
 $("file-input").onchange = (e) => { handleFiles(e.target.files); e.target.value = ""; };
 
 // Paste-to-upload: paste an image (e.g. a screenshot) straight into the folder.
